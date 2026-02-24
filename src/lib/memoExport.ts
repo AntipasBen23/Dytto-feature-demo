@@ -112,3 +112,33 @@ export function buildMemoHtml(trace: Trace, draft: string) {
 </body>
 </html>`;
 }
+
+export function openPrintMemo(trace: Trace, draft: string) {
+  const html = buildMemoHtml(trace, draft);
+
+  const w = window.open("", "_blank", "noopener,noreferrer");
+  if (!w) throw new Error("Pop-up blocked. Allow pop-ups to print.");
+
+  w.document.open();
+  w.document.write(html);
+
+  // Print styling + auto print
+  const s = w.document.createElement("style");
+  s.textContent = `
+    @media print {
+      body { background: #fff !important; padding: 0 !important; }
+      .wrap { max-width: 100% !important; }
+      .h, .sec { box-shadow: none !important; border-color: rgba(0,0,0,.2) !important; }
+      .card { border-color: rgba(0,0,0,.2) !important; }
+    }
+  `;
+  w.document.head.appendChild(s);
+
+  w.document.close();
+
+  // Give the browser a tick to render
+  setTimeout(() => {
+    w.focus();
+    w.print();
+  }, 250);
+}
