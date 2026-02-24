@@ -5,6 +5,7 @@ import { makeSeedTrace, type Trace } from "@/lib/traceSchema";
 import { buildMemoHtml } from "@/lib/memoExport";
 import { createTrace, listTraces } from "@/lib/traceApi";
 import { uid, relativeNow } from "@/lib/ids";
+import TraceHistory from "./TraceHistory";
 
 type LoadState =
   | { status: "loading" }
@@ -16,6 +17,7 @@ export default function ProofDemo() {
   const [toast, setToast] = useState<string | null>(null);
   const [savedLabel, setSavedLabel] = useState<string>("");
   const [state, setState] = useState<LoadState>({ status: "loading" });
+  const [history, setHistory] = useState<Trace[]>([]);
 
   const seed = useMemo(() => makeSeedTrace(), []);
   const draftEmail = useMemo(
@@ -36,6 +38,19 @@ Best,
     []
   );
 
+  function pop(msg: string) {
+    setToast(msg);
+    window.clearTimeout((pop as any)._t);
+    (pop as any)._t = window.setTimeout(() => setToast(null), 2000);
+  }
+
+  async function refreshHistory(docId: string) {
+    const listed = await listTraces({ docId });
+    if (!listed.ok) return { ok: false as const, error: listed.error };
+    setHistory(listed.traces);
+    return { ok: true as const, traces: listed.traces };
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -43,23 +58,25 @@ Best,
       setState({ status: "loading" });
       setSavedLabel("");
 
-      const listed = await listTraces({ docId: seed.docId });
+      const h = await refreshHistory(seed.docId);
       if (cancelled) return;
+      if (!h.ok) return setState({ status: "error", message: h.error });
 
-      if (!listed.ok) return setState({ status: "error", message: listed.error });
-
-      if (listed.traces.length > 0) {
-        setState({ status: "ready", trace: listed.traces[0] });
+      if (h.traces.length > 0) {
+        setState({ status: "ready", trace: h.traces[0] });
         setSavedLabel("Loaded from Trace Service");
         return;
       }
 
       const created = await createTrace(seed);
       if (cancelled) return;
-
       if (!created.ok) return setState({ status: "error", message: created.error });
 
-      setState({ status: "ready", trace: created.trace });
+      const h2 = await refreshHistory(seed.docId);
+      if (cancelled) return;
+      if (!h2.ok) return setState({ status: "error", message: h2.error });
+
+      setState({ status: "ready", trace: h2.traces[0] || created.trace });
       setSavedLabel("Saved to Trace Service");
     }
 
@@ -68,12 +85,6 @@ Best,
       cancelled = true;
     };
   }, [seed]);
-
-  function pop(msg: string) {
-    setToast(msg);
-    window.clearTimeout((pop as any)._t);
-    (pop as any)._t = window.setTimeout(() => setToast(null), 2000);
-  }
 
   async function copyTraceJson(trace: Trace) {
     const json = JSON.stringify(trace, null, 2);
@@ -113,7 +124,6 @@ Best,
       ...cur,
       id: uid("trc"),
       createdAt: relativeNow(),
-      // tiny “realistic” drift
       confidence: cur.confidence === "high" ? "medium" : "high",
       riskFlags: cur.riskFlags.includes("needs_human_review")
         ? ["missing_source"]
@@ -127,16 +137,25 @@ Best,
       return;
     }
 
-    const listed = await listTraces({ docId: cur.docId });
-    if (!listed.ok) {
+    const h = await refreshHistory(cur.docId);
+    if (!h.ok) {
       setSavedLabel("");
-      pop(listed.error);
+      pop(h.error);
       return;
     }
 
-    setState({ status: "ready", trace: listed.traces[0] || created.trace });
+    setState({ status: "ready", trace: h.traces[0] || created.trace });
     setSavedLabel("Saved to Trace Service");
     pop("Generated new trace");
+  }
+
+  function selectTrace(id: string) {
+    const found = history.find((t) => t.id === id);
+    if (found) {
+      setState({ status: "ready", trace: found });
+      setSavedLabel("Loaded from Trace Service");
+      pop("Loaded trace version");
+    }
   }
 
   return (
@@ -148,7 +167,7 @@ Best,
             Proof Mode (Advisory Trace)
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-black/70">
-            Frontend-only, but wired to mocked API routes:{" "}
+            Frontend-only, wired to mocked API routes:{" "}
             <span className="font-medium">/api/traces</span>.
           </p>
         </div>
@@ -156,9 +175,7 @@ Best,
         {state.status === "loading" ? (
           <Card>
             <p className="text-sm font-medium">Loading Trace Service…</p>
-            <p className="mt-2 text-sm text-black/70">
-              Simulating latency + occasional failures (like real life).
-            </p>
+            <p className="mt-2 text-sm text-black/70">Simulating latency + failures.</p>
           </Card>
         ) : state.status === "error" ? (
           <Card>
@@ -172,177 +189,189 @@ Best,
             </button>
           </Card>
         ) : (
-          <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-            {/* Draft */}
-            <section className="rounded-2xl border border-black/10 bg-white shadow-sm">
-              <div className="flex items-center justify-between border-b border-black/10 px-5 py-4">
-                <div>
-                  <p className="text-sm font-medium">Generated advisory draft</p>
+          <>
+            <div className="mb-6">
+              <TraceHistory
+                traces={history}
+                selectedId={state.trace.id}
+                onSelect={selectTrace}
+              />
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+              {/* Draft */}
+              <section className="rounded-2xl border border-black/10 bg-white shadow-sm">
+                <div className="flex items-center justify-between border-b border-black/10 px-5 py-4">
+                  <div>
+                    <p className="text-sm font-medium">Generated advisory draft</p>
+                    <p className="text-xs text-black/60">
+                      Doc: {state.trace.docId} • {state.trace.createdAt}
+                      {savedLabel ? (
+                        <>
+                          {" "}
+                          • <span className="text-black/50">{savedLabel}</span>
+                        </>
+                      ) : null}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setProofMode((v) => !v)}
+                    className={[
+                      "inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-medium transition",
+                      proofMode
+                        ? "border-black bg-black text-white"
+                        : "border-black/15 bg-white text-black hover:bg-black/5",
+                    ].join(" ")}
+                    aria-pressed={proofMode}
+                  >
+                    <span
+                      className={[
+                        "inline-block h-2.5 w-2.5 rounded-full",
+                        proofMode ? "bg-emerald-400" : "bg-black/20",
+                      ].join(" ")}
+                    />
+                    Proof Mode
+                  </button>
+                </div>
+
+                <div className="px-5 py-5">
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-black/5 px-2 py-1 text-xs text-black/70">
+                      Confidence: {state.trace.confidence}
+                    </span>
+                    {state.trace.riskFlags.map((f) => (
+                      <span
+                        key={f}
+                        className="rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-900"
+                      >
+                        {f.replaceAll("_", " ")}
+                      </span>
+                    ))}
+                  </div>
+
+                  <textarea
+                    readOnly
+                    value={draftEmail}
+                    className="h-[360px] w-full resize-none rounded-xl border border-black/10 bg-[#fffdf9] p-4 text-sm leading-6 text-black/90 outline-none"
+                  />
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => pop("Send draft (demo)")}
+                      className="rounded-xl bg-black px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                    >
+                      Send draft (demo)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => pop("Regenerate (demo)")}
+                      className="rounded-xl border border-black/15 bg-white px-4 py-2 text-sm font-medium text-black hover:bg-black/5"
+                    >
+                      Regenerate (demo)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={generateNewTrace}
+                      className="rounded-xl border border-black/15 bg-white px-4 py-2 text-sm font-medium text-black hover:bg-black/5"
+                    >
+                      Generate new trace
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              {/* Proof Panel */}
+              <aside
+                className={[
+                  "rounded-2xl border border-black/10 bg-white shadow-sm transition",
+                  proofMode ? "opacity-100" : "opacity-60",
+                ].join(" ")}
+              >
+                <div className="border-b border-black/10 px-5 py-4">
+                  <p className="text-sm font-medium">Advisory Trace</p>
                   <p className="text-xs text-black/60">
-                    Doc: {state.trace.docId} • {state.trace.createdAt}
-                    {savedLabel ? (
-                      <>
-                        {" "}
-                        • <span className="text-black/50">{savedLabel}</span>
-                      </>
-                    ) : null}
+                    Trace ID: {state.trace.id} • Client: {state.trace.clientId}
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setProofMode((v) => !v)}
-                  className={[
-                    "inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-medium transition",
-                    proofMode
-                      ? "border-black bg-black text-white"
-                      : "border-black/15 bg-white text-black hover:bg-black/5",
-                  ].join(" ")}
-                  aria-pressed={proofMode}
-                >
-                  <span
-                    className={[
-                      "inline-block h-2.5 w-2.5 rounded-full",
-                      proofMode ? "bg-emerald-400" : "bg-black/20",
-                    ].join(" ")}
-                  />
-                  Proof Mode
-                </button>
-              </div>
+                <div className="space-y-5 px-5 py-5">
+                  <Block title="Claims">
+                    <ul className="list-disc space-y-2 pl-5 text-sm text-black/80">
+                      {state.trace.claims.map((c, i) => (
+                        <li key={i}>{c}</li>
+                      ))}
+                    </ul>
+                  </Block>
 
-              <div className="px-5 py-5">
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-black/5 px-2 py-1 text-xs text-black/70">
-                    Confidence: {state.trace.confidence}
-                  </span>
-                  {state.trace.riskFlags.map((f) => (
-                    <span
-                      key={f}
-                      className="rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-900"
-                    >
-                      {f.replaceAll("_", " ")}
-                    </span>
-                  ))}
-                </div>
-
-                <textarea
-                  readOnly
-                  value={draftEmail}
-                  className="h-[360px] w-full resize-none rounded-xl border border-black/10 bg-[#fffdf9] p-4 text-sm leading-6 text-black/90 outline-none"
-                />
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => pop("Send draft (demo)")}
-                    className="rounded-xl bg-black px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-                  >
-                    Send draft (demo)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => pop("Regenerate (demo)")}
-                    className="rounded-xl border border-black/15 bg-white px-4 py-2 text-sm font-medium text-black hover:bg-black/5"
-                  >
-                    Regenerate (demo)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={generateNewTrace}
-                    className="rounded-xl border border-black/15 bg-white px-4 py-2 text-sm font-medium text-black hover:bg-black/5"
-                  >
-                    Generate new trace
-                  </button>
-                </div>
-              </div>
-            </section>
-
-            {/* Proof Panel */}
-            <aside
-              className={[
-                "rounded-2xl border border-black/10 bg-white shadow-sm transition",
-                proofMode ? "opacity-100" : "opacity-60",
-              ].join(" ")}
-            >
-              <div className="border-b border-black/10 px-5 py-4">
-                <p className="text-sm font-medium">Advisory Trace</p>
-                <p className="text-xs text-black/60">
-                  Trace ID: {state.trace.id} • Client: {state.trace.clientId}
-                </p>
-              </div>
-
-              <div className="space-y-5 px-5 py-5">
-                <Block title="Claims">
-                  <ul className="list-disc space-y-2 pl-5 text-sm text-black/80">
-                    {state.trace.claims.map((c, i) => (
-                      <li key={i}>{c}</li>
-                    ))}
-                  </ul>
-                </Block>
-
-                <Block title="Evidence">
-                  <div className="space-y-2">
-                    {state.trace.evidence.map((e) => (
-                      <div
-                        key={e.id}
-                        className="rounded-xl border border-black/10 bg-[#fffdf9] p-3"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium">{e.title}</p>
-                            <p className="text-xs text-black/60">
-                              {e.source} • {e.timestamp}
-                            </p>
+                  <Block title="Evidence">
+                    <div className="space-y-2">
+                      {state.trace.evidence.map((e) => (
+                        <div
+                          key={e.id}
+                          className="rounded-xl border border-black/10 bg-[#fffdf9] p-3"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-medium">{e.title}</p>
+                              <p className="text-xs text-black/60">
+                                {e.source} • {e.timestamp}
+                              </p>
+                            </div>
+                            <span className="rounded-full bg-black/5 px-2 py-1 text-[11px] text-black/70">
+                              source
+                            </span>
                           </div>
-                          <span className="rounded-full bg-black/5 px-2 py-1 text-[11px] text-black/70">
-                            source
-                          </span>
+                          <p className="mt-2 break-all text-xs text-black/60">
+                            {e.reference}
+                          </p>
                         </div>
-                        <p className="mt-2 break-all text-xs text-black/60">{e.reference}</p>
-                      </div>
-                    ))}
-                  </div>
-                </Block>
+                      ))}
+                    </div>
+                  </Block>
 
-                <Block title="Calculations">
-                  <div className="space-y-2">
-                    {state.trace.calculations.map((c) => (
-                      <div key={c.id} className="rounded-xl border border-black/10 p-3">
-                        <p className="text-sm font-medium">{c.label}</p>
-                        <p className="mt-1 text-xs text-black/60">{c.formula}</p>
-                        <p className="mt-2 text-sm text-black/80">{c.result}</p>
-                      </div>
-                    ))}
-                  </div>
-                </Block>
+                  <Block title="Calculations">
+                    <div className="space-y-2">
+                      {state.trace.calculations.map((c) => (
+                        <div key={c.id} className="rounded-xl border border-black/10 p-3">
+                          <p className="text-sm font-medium">{c.label}</p>
+                          <p className="mt-1 text-xs text-black/60">{c.formula}</p>
+                          <p className="mt-2 text-sm text-black/80">{c.result}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </Block>
 
-                <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => exportMemoHtml(state.trace)}
+                      className="rounded-xl bg-black px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                    >
+                      Export memo (HTML)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => copyTraceJson(state.trace)}
+                      className="rounded-xl border border-black/15 bg-white px-4 py-2 text-sm font-medium text-black hover:bg-black/5"
+                    >
+                      Copy trace JSON
+                    </button>
+                  </div>
+
                   <button
                     type="button"
-                    onClick={() => exportMemoHtml(state.trace)}
-                    className="rounded-xl bg-black px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                    onClick={() => window.location.reload()}
+                    className="text-xs text-black/50 underline decoration-black/20 underline-offset-4 hover:text-black/70"
                   >
-                    Export memo (HTML)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => copyTraceJson(state.trace)}
-                    className="rounded-xl border border-black/15 bg-white px-4 py-2 text-sm font-medium text-black hover:bg-black/5"
-                  >
-                    Copy trace JSON
+                    Reset demo (reload)
                   </button>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => window.location.reload()}
-                  className="text-xs text-black/50 underline decoration-black/20 underline-offset-4 hover:text-black/70"
-                >
-                  Reset demo (reload)
-                </button>
-              </div>
-            </aside>
-          </div>
+              </aside>
+            </div>
+          </>
         )}
 
         {toast ? (
